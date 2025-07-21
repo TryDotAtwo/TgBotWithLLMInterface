@@ -1,0 +1,142 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Bot Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 1200px; margin: auto; }
+        .stats, .filters, .users { margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .filters form { display: flex; gap: 10px; flex-wrap: wrap; }
+        button { padding: 8px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Telegram Bot Dashboard</h1>
+        <nav>
+            <a href="/">Home</a> | <a href="/#users">Users</a> | <a href="/#messages">Messages</a>
+        </nav>
+
+        <div class="stats">
+            <h2>Statistics</h2>
+            <p>Total Users: {{ stats.total_users }}</p>
+            <p>Active Users (24h): {{ stats.active_users }}</p>
+            <p>Total Messages: {{ stats.total_messages }}</p>
+        </div>
+
+        <div class="filters">
+            <h2>Filters</h2>
+            <form id="filter-form">
+                <input type="text" id="search" placeholder="Search (ID, Name, Message)">
+                <select id="language">
+                    <option value="">All</option>
+                    <option value="ru">Russian</option>
+                    <option value="en">English</option>
+                </select>
+                <input type="date" id="date-from" placeholder="Date From">
+                <input type="date" id="date-to" placeholder="Date To">
+                <select id="message-type">
+                    <option value="">All</option>
+                    <option value="user">User</option>
+                    <option value="bot">Bot</option>
+                </select>
+                <button type="submit">Apply Filters</button>
+            </form>
+        </div>
+
+        <div class="users">
+            <h2>Users</h2>
+            <table id="users-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Name</th>
+                        <th>Username</th>
+                        <th>Language</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="users-tbody"></tbody>
+            </table>
+            <div id="pagination"></div>
+        </div>
+
+        <div class="user-details">
+            <h2>User Details</h2>
+            <div id="user-details"></div>
+        </div>
+    </div>
+
+    <script>
+        async function loadUsers(page = 1) {
+            const form = document.getElementById('filter-form');
+            const search = document.getElementById('search').value;
+            const language = document.getElementById('language').value;
+            const dateFrom = document.getElementById('date-from').value;
+            const dateTo = document.getElementById('date-to').value;
+            const messageType = document.getElementById('message-type').value;
+
+            const url = `/api/users?page=${page}&search=${encodeURIComponent(search)}&language=${encodeURIComponent(language)}&date-from=${encodeURIComponent(dateFrom)}&date-to=${encodeURIComponent(dateTo)}&message-type=${encodeURIComponent(messageType)}`;
+            const response = await fetch(url);
+            const data = await response.json();
+
+            const tbody = document.getElementById('users-tbody');
+            tbody.innerHTML = '';
+            data.users.forEach(user => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${user.user_id}</td>
+                    <td>${user.user_info.first_name} ${user.user_info.last_name}</td>
+                    <td>${user.user_info.username}</td>
+                    <td>${user.user_info.language_code}</td>
+                    <td><button onclick="loadUserDetails(${user.user_id})">Details</button></td>
+                `;
+                tbody.appendChild(row);
+            });
+
+            const pagination = document.getElementById('pagination');
+            pagination.innerHTML = '';
+            for (let i = 1; i <= data.total_pages; i++) {
+                const button = document.createElement('button');
+                button.textContent = i;
+                button.onclick = () => loadUsers(i);
+                if (i === page) button.style.fontWeight = 'bold';
+                pagination.appendChild(button);
+            }
+        }
+
+        async function loadUserDetails(userId) {
+            const response = await fetch(`/api/user/${userId}`);
+            const user = await response.json();
+            const details = document.getElementById('user-details');
+            details.innerHTML = `
+                <h3>User ID: ${user.user_id}</h3>
+                <p>Name: ${user.user_info.first_name} ${user.user_info.last_name}</p>
+                <p>Username: ${user.user_info.username}</p>
+                <p>Language: ${user.user_info.language_code}</p>
+                <h4>Messages:</h4>
+                <ul>
+                    ${user.messages.map(msg => `
+                        <li>
+                            ${msg.timestamp} (${msg.is_bot ? 'Bot' : 'User'}): ${msg.message}
+                        </li>
+                    `).join('')}
+                </ul>
+            `;
+        }
+
+        document.getElementById('filter-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            loadUsers(1);
+        });
+
+        window.onload = () => loadUsers(1);
+    </script>
+</body>
+</html>
