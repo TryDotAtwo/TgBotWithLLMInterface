@@ -19,11 +19,17 @@ import traceback
 
 from Analysis_core.data_reader import DataReader
 from Analysis_core.data_processor import DataProcessor
+from Analysis_core.report_generator import generate_report, build_report_data
 from Bot_core.action_executor import ActionExecutor
 from Bot_core.llm_core import RequestFormalizer, create_request_formalizer
 from User_core.history_manager import HistoryManager
-from Utils.error_corrector import ErrorCorrector
 from User_core.telegram_bot import TelegramBot
+from User_core.speech_recognizer import SpeechRecognizer
+
+try:
+    from Utils.error_corrector import ErrorCorrector
+except ImportError as e:
+    raise ImportError("Failed to import ErrorCorrector from Utils.error_corrector. Ensure the module exists and is correctly defined.") from e
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -114,7 +120,7 @@ async def run_bot(debug_mode: bool, data_path: str, logger: logging.Logger):
         # Получение available_sensors и time_period
         logger.debug("Получение информации о датчиках")
         sensor_info = data_reader.get_sensor_info()
-        available_sensors = [sensor["sensor_name"] for sensor in sensor_info]
+        available_sensors = list(sensor_info.keys())
         if not available_sensors:
             logger.error("Список доступных датчиков пуст")
             raise ValueError("Список доступных датчиков пуст")
@@ -126,7 +132,7 @@ async def run_bot(debug_mode: bool, data_path: str, logger: logging.Logger):
             raise ValueError("Некорректный time_period")
 
         logger.debug("Инициализация DataProcessor")
-        data_processor = DataProcessor(data_reader, "Database", debug_mode, "Database", logger=logger)
+        data_processor = DataProcessor(data_reader, "Database", debug_mode, "Database", logger=logger, report_generator=generate_report, build_report_data=build_report_data)
 
         logger.debug("Инициализация ActionExecutor")
         action_executor = ActionExecutor(data_processor, error_corrector, logger=logger, debug_mode=debug_mode)
@@ -140,6 +146,9 @@ async def run_bot(debug_mode: bool, data_path: str, logger: logging.Logger):
             debug_mode=debug_mode,
             logger=logger
         )
+
+        logger.debug("Инициализация SpeechRecognizer")
+        speech_recognizer = SpeechRecognizer(logger=logger)
 
         token = os.getenv("TELEGRAM_TOKEN_Prod")
         logger.debug("Получен токен Telegram: %s", "установлен" if token else "не установлен")
@@ -157,6 +166,7 @@ async def run_bot(debug_mode: bool, data_path: str, logger: logging.Logger):
             error_corrector=error_corrector,
             request_formalizer=request_formalizer,
             action_executor=action_executor,
+            speech_recognizer=speech_recognizer,
             debug_mode=debug_mode,
             logger=logger
         )
@@ -171,8 +181,9 @@ async def run_bot(debug_mode: bool, data_path: str, logger: logging.Logger):
 def main():
     parser = argparse.ArgumentParser(description="Запуск тестов и Telegram-бота")
     parser.add_argument("--debug", action="store_true", help="Включить режим отладки")
-    parser.add_argument("--data-path", default=r"D:\Автоматизация\cMT-7232\datalog", help="Путь к папке с данными")
-    args = parser.parse_args(["--debug"])
+    parser.add_argument("--data-path", default=r"D:\Автоматизация\логи до 22.10.2025\логи до 22.10.2025\datalog", help="Путь к папке с данными")
+    args = parser.parse_args()
+    args.debug = True  # Принудительно включаем режим отладки
 
     logger = setup_logging(args.debug)
     setup_qt_paths(logger)
