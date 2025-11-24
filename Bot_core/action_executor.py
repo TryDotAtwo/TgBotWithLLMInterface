@@ -4,7 +4,11 @@ import logging
 import asyncio
 from typing import Dict, Any, Optional
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
+from datetime import timezone, timedelta
+
+moscow_tz = timezone(timedelta(hours=3))
+
 
 CONFIG = {
     "prompts": {
@@ -98,6 +102,24 @@ CONFIG = {
                 },
                 "validations": ["action"]
             },
+
+
+            "generate_report": {
+                "description": "Сгенерировать отчёт по криогенному замедлителю КЗ201 (5 графиков: T32, P22, DT_51, ВД21, ЛИР)",
+                "call_rule": "Указать начальную и конечную дату (опционально). По умолчанию — последние 24 часа.",
+                "expected_json": {
+                    "action": "generate_report",
+                    "parameters": {
+                        "start_time": "string (YYYY-MM-DD HH:MM:SS, опционально)",
+                        "end_time": "string (YYYY-MM-DD HH:MM:SS, опционально)"
+                    },
+                    "comment": "string"
+                },
+                "validations": ["action", "start_time", "end_time"]
+}
+        },
+
+
             "clarify": {
                 "description": "Задать уточняющие вопросы",
                 "call_rule": "Используется при неполных данных",
@@ -110,7 +132,8 @@ CONFIG = {
                 },
                 "validations": ["action", "questions"]
             }
-        }
+
+
     },
     "llm_timeout": 60
 }
@@ -157,7 +180,7 @@ class ActionExecutor:
 
         try:
             sensors = self.data_processor.reader.get_sensor_info()  # Убрал "s", предполагая, что параметр не нужен
-            available_sensors = [s.get("sensor_name", "") for s in sensors] if sensors else []
+            available_sensors = [s["sensor_name"] for s in sensors.values()] if sensors else []
             time_period = self.data_processor.get_time_period()
             required_params = {
                 "plot_selected_sensor": ["sensor_name", "start_time", "end_time"],
@@ -480,7 +503,7 @@ class ActionExecutor:
                 sensors = self.data_processor.reader.get_sensor_info()
                 if not sensors:
                     raise ValueError("Нет доступных датчиков")
-                result = {"result": [s["sensor_name"] for s in sensors]}
+                result = {"result": [s["sensor_name"] for s in sensors.values()]}
                 self.logger.debug("Получен список датчиков: %s", result)
                 return result
 
@@ -505,7 +528,7 @@ class ActionExecutor:
             if action == "print_sensor_info":
                 sensor_name = params["sensor_name"]
                 sensors = self.data_processor.reader.get_sensor_info()
-                sensor = next((s for s in sensors if s["sensor_name"] == sensor_name), None)
+                sensor = next((s for s in sensors.values() if s["sensor_name"] == sensor_name), None)
                 if not sensor:
                     raise ValueError(f"Датчик {sensor_name} не найден")
                 period = self.data_processor.get_time_period()
@@ -532,6 +555,85 @@ class ActionExecutor:
                 result = {"result": {"plot_path": str(path)}}
                 self.logger.debug("Случайный график построен: %s", result)
                 return result
+
+            if action == "generate_report":
+                # ───── Параметры из LLM ─────
+                start_time_str = params.get("start_time")
+                end_time_str   = params.get("end_time")
+
+                # ───── Парсим даты (UTC) ─────
+                start_dt = None
+                end_dt   = None
+
+                if start_time_str:
+                    try:
+                        start_dt = datetime.strptime(start_time_str, "%Y-%m-%d %H:%M:%S") \
+                                   .replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        raise ValueError(
+                            f"Неверный формат start_time: '{start_time_str}'. "
+                            "Ожидается: YYYY-MM-DD HH:MM:SS"
+                        )
+
+                if end_time_str:
+                    try:
+                        end_dt = datetime.strptime(end_time_str, "%Y-%m-%d %H:%M:%S") \
+                                 .replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        raise ValueError(
+                            f"Неверный формат end_time: '{end_time_str}'. "
+                            "Ожидается: YYYY-MM-DD HH:MM:SS"
+                        )
+
+                # ───── Если даты не указаны → последние 24 часа ─────
+                if not start_dt or not end_dt:
+                    end_dt   = datetime.now(timezone.utc)
+                    start_dt = end_dt - timedelta(hours=24)
+
+                # ───── Проверка: start < end ─────
+                if start_dt >= end_dt:
+                    raise ValueError("start_time должен быть раньше end_time")
+
+                # ───── Генерация отчёта ─────
+                try:
+                        plot_paths, pdf_path, docx_path = self.data_processor.generate_report(
+                            start_time=start_dt,
+                            end_time=end_dt,
+                            output_dir="Bot_Reports",
+                            logger=self.logger
+                        )
+                except Exception as exc:
+                    self.logger.error("Ошибка генерации отчёта КЗ201: %s", exc)
+                    self.logger.error(traceback.format_exc())
+                    raise RuntimeError(f"Не удалось сгенерировать отчёт: {exc}")
+
+                # === Собираем ВСЕ файлы для отправки ===
+                files_to_send = []
+
+                if pdf_path and pdf_path.exists():
+                    files_to_send.append(("PDF", pdf_path))
+                if docx_path and docx_path.exists():
+                    files_to_send.append(("DOCX", docx_path))
+                for i, plot_path in enumerate(plot_paths, 1):
+                    if plot_path and plot_path.exists():
+                        files_to_send.append((f"График {i}", plot_path))
+
+                # === Ответ боту ===
+                result = {
+                    "result": {
+                        "files": [
+                            {"type": file_type, "path": str(path)} for file_type, path in files_to_send
+                        ],
+                        "message": (
+                            f"**Отчёт КЗ201 готов** (7 файлов)\n"
+                            f"`{start_dt.strftime('%d.%m.%Y %H:%M')} — {end_dt.strftime('%d.%m.%Y %H:%M')}`\n"
+                            f"PDF + DOCX + 5 графиков"
+                        )
+                    }
+                }
+                self.logger.info("Отчёт КЗ201: подготовлено %d файлов", len(files_to_send))
+                return result
+
 
             raise ValueError(f"Неизвестное действие: {action}")
         except Exception as e:
